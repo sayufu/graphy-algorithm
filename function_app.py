@@ -10,16 +10,24 @@ import matplotlib.pyplot as plt
 
 app = func.FunctionApp(http_auth_level=func.AuthLevel.ANONYMOUS)
 
+cached_data = {}
 
 def read_from_http_endpoint(endpoint_url):
+    # Check if data is already in the cache
+    if endpoint_url in cached_data:
+        return cached_data[endpoint_url]
+
     session = requests.Session()
     response = session.get(endpoint_url)
 
     if response.status_code != 200:
-        raise Exception('The request failed with status code {}'.format(response.status_code))
+        raise Exception(f'The request to {endpoint_url} failed with status code {response.status_code}')
 
     response_content = response.content
     data_json = json.loads(response_content)
+
+    # Cache the data for future use
+    cached_data[endpoint_url] = data_json
 
     return data_json
 
