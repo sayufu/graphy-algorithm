@@ -2,12 +2,27 @@ import azure.functions as func
 import logging
 import json
 
+import requests
 import pandas as pd
 import networkx as nx
 import ast
 import matplotlib.pyplot as plt
 
 app = func.FunctionApp(http_auth_level=func.AuthLevel.ANONYMOUS)
+
+
+def read_from_http_endpoint(endpoint_url):
+    session = requests.Session()
+    response = session.get(endpoint_url)
+
+    if response.status_code != 200:
+        raise Exception('The request failed with status code {}'.format(response.status_code))
+
+    response_content = response.content
+    data_json = json.loads(response_content)
+
+    return data_json
+
 
 def calculate_weight(node1, node2, productos_df):
     attributes1 = set(productos_df[productos_df['id'] == node1][['category', 'sub_category', 'brand', 'type']].values.flatten())
@@ -82,18 +97,25 @@ def http_trigger(req: func.HttpRequest) -> func.HttpResponse:
         else:
             productId = req_body.get('productId')
     else:
-        productos_df = pd.read_csv('GRAPHY_PRODUCTS.csv')
-        conexiones_df = pd.read_csv('GRAPHY_PURCHASES.csv')
+        productos_list = read_from_http_endpoint('https://us-east-1.aws.data.mongodb-api.com/app/graphy-api-cfefb/endpoint/api/products')
+        conexiones_list = read_from_http_endpoint('https://us-east-1.aws.data.mongodb-api.com/app/graphy-api-cfefb/endpoint/api/purchases')
+
+        conexiones_df = pd.DataFrame(conexiones_list)
+        productos_df = pd.DataFrame(productos_list)
+
+        #productos_df = pd.read_csv('GRAPHY_PRODUCTS.csv')
+        #conexiones_df = pd.read_csv('GRAPHY_PURCHASES.csv')
 
         # Recomendaciones de productos por frecuencia de compra
         G = nx.Graph()
         num_filas = 20 
 
+
         for idx, row in conexiones_df.iterrows():
             list_products_str = row['list_products']
     
-            if pd.notna(list_products_str):
-                productos = ast.literal_eval(list_products_str)
+            if list_products_str:
+                productos = list_products_str
                 n = len(productos)
         
                 if n > 1:
