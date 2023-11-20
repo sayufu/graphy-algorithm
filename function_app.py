@@ -1,3 +1,5 @@
+
+
 import azure.functions as func
 import logging
 import json
@@ -5,12 +7,12 @@ import json
 import requests
 import pandas as pd
 import networkx as nx
-import ast
-import matplotlib.pyplot as plt
+import time
 
 app = func.FunctionApp(http_auth_level=func.AuthLevel.ANONYMOUS)
 
 cached_data = {}
+cached_graph = None
 
 def read_from_http_endpoint(endpoint_url):
     # Check if data is already in the cache
@@ -33,13 +35,13 @@ def read_from_http_endpoint(endpoint_url):
 
 
 def calculate_weight(node1, node2, productos_df):
-    attributes1 = set(productos_df[productos_df['id'] == node1][['category', 'sub_category', 'brand', 'type']].values.flatten())
-    attributes2 = set(productos_df[productos_df['id'] == node2][['category', 'sub_category', 'brand', 'type']].values.flatten())
+    attributes1 = set(productos_df.loc[productos_df['id'] == node1, ['category', 'sub_category', 'brand', 'type']].values.flatten())
+    attributes2 = set(productos_df.loc[productos_df['id'] == node2, ['category', 'sub_category', 'brand', 'type']].values.flatten())
 
-    # Calcula la cantidad de valores iguales entre los conjuntos de atributos
     common_values = len(attributes1.intersection(attributes2))
 
-    return common_values + 1 
+    return common_values + 1
+
 
 def new_Graph(first_node, G):
     if first_node not in G:
@@ -58,6 +60,20 @@ def new_Graph(first_node, G):
             edge = (newfirst_node, j[0], j[1].get("weight"))
             graph.append(edge)
     return graph
+
+def gen_edge(Graph,productos, productos_df):
+    n = len(productos)
+
+    if n > 1:
+        for i in range(n - 1):
+            source = productos[i]
+            target = productos[i + 1]
+            weight = calculate_weight(source, target, productos_df)
+            Graph.add_edge(source, target, weight=weight)
+        source = productos[-1]
+        target = productos[0]
+        weight = calculate_weight(source, target, productos_df)
+        Graph.add_edge(source, target, weight=weight)
 
 def Prim(G, start_node):
     mst = nx.Graph()
@@ -83,14 +99,15 @@ def Prim(G, start_node):
         if min_edge:
             node1, node2, weight = min_edge
             visited.add(node2)
-            mst.add_edge(node1, node2, weight=weight)
             selected.append(node2)
         edges = []
 
     return mst, selected
 
+
 @app.route(route="graphy-recommend")
 def http_trigger(req: func.HttpRequest) -> func.HttpResponse:
+    global cached_graph
     logging.info('Python HTTP trigger function processed a request for Graphy App.')
 
     productId = req.params.get('productId')
@@ -108,54 +125,57 @@ def http_trigger(req: func.HttpRequest) -> func.HttpResponse:
         productos_list = read_from_http_endpoint('https://us-east-1.aws.data.mongodb-api.com/app/graphy-api-cfefb/endpoint/api/products')
         conexiones_list = read_from_http_endpoint('https://us-east-1.aws.data.mongodb-api.com/app/graphy-api-cfefb/endpoint/api/purchases')
 
-        conexiones_df = pd.DataFrame(conexiones_list)
-        productos_df = pd.DataFrame(productos_list)
-
-        #productos_df = pd.read_csv('GRAPHY_PRODUCTS.csv')
-        #conexiones_df = pd.read_csv('GRAPHY_PURCHASES.csv')
-
-        # Recomendaciones de productos por frecuencia de compra
-        G = nx.Graph()
-        num_filas = 20 
+        conexiones_df = pd.DataFrame(conexiones_list)[['ID','list_products']]
+        productos_df = pd.DataFrame(productos_list)[['id','category', 'sub_category', 'brand', 'type']]
 
 
-        for idx, row in conexiones_df.iterrows():
-            list_products_str = row['list_products']
-    
-            if list_products_str:
-                productos = list_products_str
-                n = len(productos)
-        
-                if n > 1:
-                    for i in range(n - 1):
-                        source = productos[i]
-                        target = productos[i + 1]
-                        weight = calculate_weight(source, target, productos_df)
-                        G.add_edge(source, target, weight=weight)
-                    source = productos[-1]
-                    target = productos[0]
-                    weight = calculate_weight(source, target, productos_df)
-                    G.add_edge(source, target, weight=weight)
-        
+        if cached_graph is None:
+            G = nx.Graph()
+            start_time = time.time()
+            for idx, row in conexiones_df.iterrows():
+                list_products_str = row['list_products']
+
+                if list_products_str:
+                    productos = list_products_str
+                    gen_edge(G, productos, productos_df)
+
+            end_time = time.time()
+            logging.info(f'Time taken by building the graph: {end_time - start_time} seconds')
+
+            cached_graph = G
+
+
         start_node = int(productId)
-        nuevo = nx.Graph()
+        G = cached_graph
         delimitado = new_Graph(start_node, G)
 
+
+        # Recomendaciones por producto
+        nuevo = nx.Graph()
         for i in delimitado:
             node1, node2, weight = i
             nuevo.add_edge(node1, node2, weight=weight)
 
         mst, productRecommendations = Prim(nuevo, start_node)
 
+
+        # Recomendaciones por marca
+        marca_seleccionada = productos_df.loc[productos_df['id'] == start_node, 'brand'].values[0]
+        productos_misma_marca = productos_df[productos_df['brand'] == marca_seleccionada]
+        ids_productos_misma_marca = productos_misma_marca['id'].convert_dtypes(int).tolist()
+        marcas = nx.Graph()
+        gen_edge(marcas,ids_productos_misma_marca, productos_df)
+        brandRecommendations = ids_productos_misma_marca
+
     response = {
         "requestedProduct": int(productId),
-        "brandRecommendations": brandRecommendations,
-        "productRecommendations": productRecommendations
+        "brandRecommendations": brandRecommendations[:20],
+        "productRecommendations": productRecommendations[:20]
     }
 
     headers = {
         "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "Access-Control-Allow-Methods": "GET",
         "Access-Control-Allow-Headers": "Content-Type, Authorization",
     }
 
@@ -167,3 +187,52 @@ def http_trigger(req: func.HttpRequest) -> func.HttpResponse:
             status_code=200,
             headers=headers
         )
+    
+
+@app.route(route="graphy-purchase")
+def add_purchases(req: func.HttpRequest) -> func.HttpResponse:
+    global cached_graph
+    logging.info('Python HTTP trigger function processed a request for Graphy App.')
+
+    conexiones_list = read_from_http_endpoint('https://us-east-1.aws.data.mongodb-api.com/app/graphy-api-cfefb/endpoint/api/purchases')
+    productos_list = read_from_http_endpoint('https://us-east-1.aws.data.mongodb-api.com/app/graphy-api-cfefb/endpoint/api/products')
+
+    productos_df = pd.DataFrame(productos_list)[['id','category', 'sub_category', 'brand', 'type']]
+    last_record = None
+
+    if conexiones_list:
+        last_record = conexiones_list[-1]
+        print("Last record:", last_record)
+    else:
+        print("The list is empty.")
+
+
+    list_products_str = last_record['list_products']
+
+    if list_products_str:
+        productos = list_products_str
+        if cached_graph is None:
+            return func.HttpResponse(
+                f"No existing cached graph",
+                status_code=500
+            )
+        else:
+            gen_edge(cached_graph, productos, productos_df)
+            return func.HttpResponse(
+                f"Added the purchase with products {productos} to the graph.",
+                status_code=200
+            )
+
+
+    headers = {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET",
+        "Access-Control-Allow-Headers": "Content-Type, Authorization",
+    }
+
+    return func.HttpResponse(
+        "This HTTP is to trigger to add purchases to an existing graph",
+        status_code=200,
+        headers=headers
+    )
+

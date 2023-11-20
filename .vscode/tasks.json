@@ -22,12 +22,6 @@
         "command": "${config:azureFunctions.pythonVenv}/bin/python -m pip install -r requirements.txt"
       },
       "problemMatcher": []
-    },
-    {
-      "type": "func",
-      "command": "extensions install",
-      "problemMatcher": [],
-      "label": "func: extensions install"
     }
   ]
 }
